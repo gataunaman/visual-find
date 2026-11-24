@@ -87,11 +87,14 @@ public:
         cache_->AddProperty(UIA_NamePropertyId);
         cache_->AddProperty(UIA_BoundingRectanglePropertyId);
         cache_->AddProperty(UIA_ControlTypePropertyId);
-        // Browsers publish a link's text as the link's name with no Text child, so links and buttons
-        // are read along with text; a Document element marks where a browser's page is.
+        // Browsers publish the text of links, table cells, list items and the like as the element's
+        // name with no Text child, so those are read along with plain text; a Document element
+        // marks where a browser's page is.
         detail::Com<IUIAutomationCondition> kind;
         for (long id : {UIA_TextControlTypeId, UIA_DocumentControlTypeId, UIA_HyperlinkControlTypeId,
-                        UIA_ButtonControlTypeId}) {
+                        UIA_ButtonControlTypeId, UIA_DataItemControlTypeId, UIA_ListItemControlTypeId,
+                        UIA_MenuItemControlTypeId, UIA_TabItemControlTypeId, UIA_CheckBoxControlTypeId,
+                        UIA_RadioButtonControlTypeId, UIA_TreeItemControlTypeId, UIA_HeaderItemControlTypeId}) {
             VARIANT type{}; type.vt = VT_I4; type.lVal = id;
             detail::Com<IUIAutomationCondition> one;
             if (FAILED(automation_->CreatePropertyCondition(UIA_ControlTypePropertyId, type, one.put())) || !one)
@@ -113,6 +116,7 @@ public:
     // other than `allowed` are skipped.
     PageRead read(HWND root, const RECT& monitor, std::initializer_list<HWND> allowed) const {
         PageRead page;
+        page.ready = !isBrowserWindow(root);  // a browser is ready only once its page shows up
         detail::Com<IUIAutomationElement> element;
         if (FAILED(automation_->ElementFromHandle(root, element.put())) || !element) return page;
         detail::Com<IUIAutomationElementArray> found;
@@ -150,20 +154,32 @@ public:
             found_.push_back({{std::wstring(name, SysStringLen(name)),
                                {double(clipped.left), double(clipped.top), double(w), double(h)}}, centre, container});
         }
-        // A link or button whose text is already reported by a Text node inside it is a duplicate.
+        // A container (a row, list item or link) that only repeats the items drawn inside it is a
+        // duplicate: remove the text of everything inside it and see whether anything is left.
+        std::vector<size_t> byTop(found_.size());
+        for (size_t i = 0; i < byTop.size(); ++i) byTop[i] = i;
+        std::sort(byTop.begin(), byTop.end(), [&](size_t a, size_t b) { return found_[a].node.rect.y < found_[b].node.rect.y; });
         std::vector<POINT> centres;
         for (size_t i = 0; i < found_.size(); ++i) {
             const auto& candidate = found_[i];
             bool repeated = false;
             if (candidate.container) {
                 const Box& b = candidate.node.rect;
-                for (const auto& other : found_) {
-                    if (other.container) continue;
-                    const Box& o = other.node.rect;
-                    if (o.x >= b.x - 1 && o.y >= b.y - 1 && o.x + o.width <= b.x + b.width + 1 &&
-                        o.y + o.height <= b.y + b.height + 1 &&
-                        candidate.node.text.find(other.node.text) != std::wstring::npos) { repeated = true; break; }
+                std::wstring rest = candidate.node.text;
+                bool any = false;
+                auto it = std::lower_bound(byTop.begin(), byTop.end(), b.y - 1,
+                    [&](size_t index, double y) { return found_[index].node.rect.y < y; });
+                for (; it != byTop.end() && found_[*it].node.rect.y <= b.y + b.height + 1; ++it) {
+                    if (*it == i) continue;
+                    const Box& o = found_[*it].node.rect;
+                    if (o.x < b.x - 1 || o.x + o.width > b.x + b.width + 1 || o.y + o.height > b.y + b.height + 1 ||
+                        o.width * o.height >= b.width * b.height * 0.98) continue;
+                    const size_t at = rest.find(found_[*it].node.text);
+                    if (at != std::wstring::npos) { rest.erase(at, found_[*it].node.text.size()); any = true; }
                 }
+                size_t left{};
+                for (wchar_t c : rest) if (!whitespace(c)) ++left;
+                repeated = any && left <= 2;
             }
             if (repeated) continue;
             page.nodes.push_back(candidate.node);

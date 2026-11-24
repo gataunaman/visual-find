@@ -40,12 +40,15 @@ int main(int argc, char** argv) {
         vf::AccessibleText reader;
         std::cout << "Create UI Automation client: " << vf::milliseconds(start) << " ms\n";
         vf::PageRead page;
-        for (int run = 1; run <= 5; ++run) {
+        int waitMs = 0;
+        for (int i = 2; i + 1 < argc; ++i) if (std::string(argv[i]) == "--wait") waitMs = atoi(argv[i + 1]);
+        const auto began = vf::Clock::now();
+        for (int run = 1; run <= 5 || (!page.ready && vf::milliseconds(began) < waitMs); ++run) {
             start = vf::Clock::now();
             page = reader.read(root, area, {root});
             std::cout << "read " << run << ": " << vf::milliseconds(start) << " ms, " << page.nodes.size()
                       << " runs, page ready: " << (page.ready ? "yes" : "no") << '\n';
-            if (page.ready && run >= 2) break;
+            if (page.ready) { std::cout << "ready after " << vf::milliseconds(began) << " ms since the first read\n"; break; }
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
         }
         start = vf::Clock::now();
@@ -81,8 +84,11 @@ int main(int argc, char** argv) {
         }
         vf::SearchIndex index(exact.words);
         start = vf::Clock::now();
-        const auto hits = index.find(L"the");
-        std::cout << "index search 'the': " << hits.size() << " matches in " << vf::milliseconds(start) << " ms\n";
+        std::wstring word = L"the";
+        for (int i = 2; i + 1 < argc; ++i)
+            if (std::string(argv[i]) == "--find") word.assign(argv[i + 1], argv[i + 1] + strlen(argv[i + 1]));
+        const auto hits = index.find(word);
+        std::wcout << L"index search '" << word << L"': " << hits.size() << " matches in " << vf::milliseconds(start) << " ms\n";
         for (int i = 0; i < show && size_t(i) < page.nodes.size(); ++i) {
             const auto& n = page.nodes[size_t(i)];
             std::wcout << L"  [" << int(n.rect.x) << L"," << int(n.rect.y) << L" " << int(n.rect.width) << L"x"

@@ -11,6 +11,7 @@ All notable changes are documented here. Format based on [Keep a Changelog](http
 - Automatic refresh while scrolling: mouse-wheel scrolling over the searched monitor hides stale highlights and re-reads the screen once scrolling pauses.
 
 ### Fixed
+- Table cells (such as GitHub's "1 hour ago"), list items, menu items, tabs, checkboxes and column headers are now read through accessibility too; browsers expose their text only as the element name. Containers that merely repeat the items inside them are dropped, and a browser whose query fails is retried instead of being treated as empty.
 - Small text (for example zoomed-out web pages) is now read: from the application's own text where it publishes it, otherwise by recognizing an enlarged copy of the same screenshot (no second capture).
 
 ### Changed
