@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Visual Find fixture - paused video</title>
+<style>body{background:white;margin:60px;font:28px "Segoe UI",sans-serif}video{width:1000px;height:400px}</style>
+<p>Text below is a paused local video frame.</p><video autoplay muted playsinline></video>
+<script>
+const canvas = document.createElement('canvas'); canvas.width=1000; canvas.height=400;
+const context = canvas.getContext('2d'); context.fillStyle='white'; context.fillRect(0,0,1000,400);
+context.font='30px Segoe UI'; context.fillStyle='#182238';
+['algorithm algorithm ALGORITHM','binary search tree','Hello World'].forEach((s,i)=>context.fillText(s,40,80+i*85));
+const video = document.querySelector('video'); video.srcObject=canvas.captureStream(1);
+video.addEventListener('playing',()=>setTimeout(()=>{video.pause();document.title='Visual Find fixture - paused video ready';},1000),{once:true});
+</script></html>

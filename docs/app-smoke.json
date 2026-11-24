@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "sessions": 2,
+  "cached_searches": 15,
+  "startup_ms": 15.927,
+  "search_ui_ms": 5.5723,
+  "capture_ms": 53.6684,
+  "ocr_ms": 64.8735,
+  "index_ms": 0.0282,
+  "search_ms": 0.0028,
+  "overlay_ms": 0.2309,
+  "session_total_ms": 143.619,
+  "failed_checks": []
+}

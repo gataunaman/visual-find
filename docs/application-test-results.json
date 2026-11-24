@@ -1,0 +1,102 @@
+﻿[
+    {
+        "passed":  true,
+        "capture_ms":  63.8556,
+        "ocr_ms":  148.298,
+        "word_count":  44,
+        "algorithm_matches":  3,
+        "phrase_matches":  1,
+        "hello_matches":  1,
+        "settings_text_only":  false,
+        "application":  "Chrome browser text",
+        "status":  "passed"
+    },
+    {
+        "passed":  true,
+        "capture_ms":  57.7083,
+        "ocr_ms":  81.0189,
+        "word_count":  40,
+        "algorithm_matches":  3,
+        "phrase_matches":  1,
+        "hello_matches":  1,
+        "settings_text_only":  false,
+        "application":  "Edge browser text",
+        "status":  "passed"
+    },
+    {
+        "passed":  true,
+        "capture_ms":  52.0522,
+        "ocr_ms":  90.1157,
+        "word_count":  32,
+        "algorithm_matches":  3,
+        "phrase_matches":  1,
+        "hello_matches":  1,
+        "settings_text_only":  false,
+        "application":  "Edge PDF viewer",
+        "status":  "passed"
+    },
+    {
+        "passed":  true,
+        "capture_ms":  35.1702,
+        "ocr_ms":  61.8211,
+        "word_count":  43,
+        "algorithm_matches":  3,
+        "phrase_matches":  1,
+        "hello_matches":  1,
+        "settings_text_only":  false,
+        "application":  "Notepad",
+        "status":  "passed"
+    },
+    {
+        "passed":  true,
+        "capture_ms":  164.263,
+        "ocr_ms":  547.423,
+        "word_count":  66,
+        "algorithm_matches":  3,
+        "phrase_matches":  1,
+        "hello_matches":  1,
+        "settings_text_only":  false,
+        "settings_term_matches":  0,
+        "application":  "VS Code",
+        "status":  "passed"
+    },
+    {
+        "passed":  true,
+        "capture_ms":  126.72,
+        "ocr_ms":  118.775,
+        "word_count":  36,
+        "algorithm_matches":  3,
+        "phrase_matches":  1,
+        "hello_matches":  1,
+        "settings_text_only":  false,
+        "settings_term_matches":  0,
+        "application":  "Raster image in Chrome",
+        "status":  "passed"
+    },
+    {
+        "passed":  true,
+        "capture_ms":  77.2521,
+        "ocr_ms":  100.151,
+        "word_count":  37,
+        "algorithm_matches":  3,
+        "phrase_matches":  1,
+        "hello_matches":  1,
+        "settings_text_only":  false,
+        "settings_term_matches":  0,
+        "application":  "Paused video frame in Chrome",
+        "status":  "passed"
+    },
+    {
+        "passed":  true,
+        "capture_ms":  206.063,
+        "ocr_ms":  620.029,
+        "word_count":  122,
+        "algorithm_matches":  0,
+        "phrase_matches":  0,
+        "hello_matches":  0,
+        "settings_text_only":  true,
+        "settings_term_matches":  12,
+        "application":  "Windows Settings",
+        "status":  "passed"
+    }
+]

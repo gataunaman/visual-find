@@ -1,0 +1,9 @@
+Visual Find application fixture
+
+algorithm algorithm ALGORITHM
+
+binary search tree
+
+Hello World
+
+Local OCR works without selecting the text.
