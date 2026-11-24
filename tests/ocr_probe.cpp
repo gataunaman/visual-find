@@ -1,6 +1,7 @@
 #include "../src/ocr.hpp"
 #include <iostream>
-int main() {
+int main(int argc, char** argv) {
+    const double scale = argc > 1 ? atof(argv[1]) : 1.0;
     try {
         vf::enableDpiAwareness();
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -8,7 +9,7 @@ int main() {
         for (auto language : winrt::Windows::Media::Ocr::OcrEngine::AvailableRecognizerLanguages())
             std::wcout << "OCR language: " << language.LanguageTag().c_str() << '\n';
         vf::Ocr ocr;
-        auto capture = vf::captureScreen(vf::cursorMonitor(), vf::Ocr::maxDimension());
+        auto capture = vf::captureScreen(vf::cursorMonitor(), vf::Ocr::maxDimension(), scale);
         auto result = ocr.recognize(capture);
         std::cout << "Capture ms: " << capture.captureMs << ", OCR ms: " << result.ocrMs
                   << ", words: " << result.words.size() << '\n';

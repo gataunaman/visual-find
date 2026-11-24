@@ -320,6 +320,13 @@ class Application {
         // Keep ownership if the UI no longer accepts messages.
         if (PostMessageW(window_,message,0,reinterpret_cast<LPARAM>(data.get()))) data.release();
     }
+    static bool tooSmall(const std::vector<vf::Word>& words) {
+        if (words.size() < 20) return true;
+        std::vector<double> heights;
+        for (const auto& word : words) heights.push_back(word.bounds.height);
+        std::nth_element(heights.begin(), heights.begin() + heights.size() / 2, heights.end());
+        return heights[heights.size() / 2] < 11;
+    }
     void work() {
         try {
             winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -345,6 +352,20 @@ class Application {
                     auto labels = job.desktop ? vf::desktopLabels(capture.coordinates,window_) : std::vector<vf::Word>{};
                     auto output = ocr.recognize(capture);
                     if (job.token != token_) continue;
+                    if (tooSmall(output.words)) {
+                        // Tiny text (zoomed-out pages) is often unreadable at native size: retry at 2x.
+                        // The search bar must be excluded from this second screenshot too.
+                        SetWindowDisplayAffinity(window_, 0x00000011);
+                        DwmFlush();
+                        auto big = vf::captureScreen(job.monitor, vf::Ocr::maxDimension(), 2.0);
+                        SetWindowDisplayAffinity(window_, 0);
+                        if (job.token != token_) continue;
+                        auto retry = ocr.recognize(big);
+                        if (job.token != token_) continue;
+                        if (retry.words.size() > output.words.size()) {
+                            retry.ocrMs += output.ocrMs; output = std::move(retry);
+                        }
+                    }
                     finished->ocrMs = output.ocrMs;
                     finished->language = std::move(output.language);
                     const auto indexStart = vf::Clock::now();

@@ -56,13 +56,14 @@ inline HMONITOR cursorMonitor() {
     if (!GetCursorPos(&point)) throw winError("Cannot read cursor position");
     return MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
 }
-inline Capture captureScreen(HMONITOR monitor, unsigned maxDimension) {
+// upscale > 1 enlarges the capture (within maxDimension) so small on-screen text is legible to OCR.
+inline Capture captureScreen(HMONITOR monitor, unsigned maxDimension, double upscale = 1.0) {
     const auto start = Clock::now();
     const auto info = monitorInfo(monitor);
     const int width = info.rcMonitor.right - info.rcMonitor.left;
     const int height = info.rcMonitor.bottom - info.rcMonitor.top;
-    // Scale only to satisfy the OCR engine's actual limit, preserving aspect ratio.
-    const double scale = std::min(1.0, double(maxDimension) / std::max(width, height));
+    // Scale to the requested factor, capped by the OCR engine's actual limit; aspect ratio is preserved.
+    const double scale = std::min(upscale, double(maxDimension) / std::max(width, height));
     const int w = std::max(1, int(std::floor(width * scale)));
     const int h = std::max(1, int(std::floor(height * scale)));
     Capture result{{info.rcMonitor.left, info.rcMonitor.top, width, height, w, h},
