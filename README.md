@@ -6,6 +6,8 @@ Visual Find is a native Windows utility for finding visible text anywhere on the
 
 The app runs in the notification area and uses Win32 controls, a worker thread, and a transparent highlight overlay. There is no browser shell or .NET application runtime.
 
+**Browsers and other apps are read exactly, not guessed.** Alongside OCR, Visual Find asks the application in front (and the one under the cursor) which text it is showing, through Windows UI Automation, the interface screen readers use. A page zoomed far out, with 4-6 pixel text that no OCR can read, is searchable this way, in about a tenth of a second once the browser's accessibility is on. Results appear as soon as either source finishes: exact text replaces OCR wherever the application supplied it, and OCR still covers images, video, PDFs drawn as pictures, and apps that publish nothing. Highlight positions inside a line are taken from the pixels, so they follow the real spaces between words.
+
 When search starts from the Windows desktop, it also reads the names and physical bounds of visible desktop shortcuts through Windows accessibility. This makes names such as **MinGW Installer** searchable even when OCR misses their shadowed lettering on wallpaper. Desktop shortcut matches highlight the full icon-and-label region; their full names can be searched even when Windows abbreviates the displayed label.
 
 ## Run
@@ -39,6 +41,7 @@ Use command-line arguments, or put them in a Windows shortcut's target:
 | `--hotkey Ctrl+Alt+G` | Changes the global shortcut. Use one or more of `Ctrl`/`Control`, `Shift`, `Alt`, and `Win`, joined with `+`, followed by exactly one letter or digit. At least one modifier is required. |
 | `--language en-US` | Selects an installed Windows OCR language by its language tag. An unavailable language produces an error. |
 | `--quiet` | Suppresses the startup tray notification. The tray icon and shortcut remain active. |
+| `--no-page-text` | Turns off the accessibility reader; only OCR (and desktop icon names) is used. |
 
 Without `--language`, Visual Find first tries the user's profile languages, then the first available installed OCR recognizer. These options are read when the first instance starts. Exit the existing instance before relaunching with different options.
 
@@ -50,12 +53,13 @@ If the shortcut is already registered by another app, Visual Find reports the co
 - Phrases can span adjacent OCR words and line breaks. Recognition order determines phrase order; columns and complex layouts can produce unexpected joins.
 - Substring matches highlight the whole recognized word rectangle. Phrases use one rectangle per recognized line. Overlapping substring occurrences are not counted separately.
 - Each session searches a snapshot of one monitor. Mouse-wheel scrolling refreshes automatically; moving windows, scrollbar dragging, keyboard scrolling, playing video, or other page changes can still leave highlights out of date, so use **F5**. The utility does not scroll applications or find off-screen text. Scroll detection uses a low-level mouse hook that is installed only while a search is open and sees wheel events only as a trigger; it does not record or store input.
-- Very small text is retried automatically at 2x enlargement (which makes that session slower); small, low-contrast, stylized, rotated, or unsupported-language text may be missed or read incorrectly. Captures larger than the OCR engine's image-size limit are reduced before recognition, which can further affect small text.
+- Text read through accessibility is exact only for applications that publish it. The first search on a browser page after the browser starts (or after it has been idle) can take a second or two while the browser builds its accessibility tree; OCR results show meanwhile. Asking a browser for accessibility makes it keep that mode on, using some extra CPU and memory in the browser until it restarts. VS Code and Cursor are left to OCR because asking them can trigger their screen-reader prompt. Text hidden from view, covered by other windows, or too small to be drawn is ignored; wrapped-line positions are exact for the line and estimated by about a letter within it when the pixels do not show the spaces.
+- Very small text with no accessibility text is retried automatically at 2x enlargement (which makes that session slower); small, low-contrast, stylized, rotated, or unsupported-language text may be missed or read incorrectly. Captures larger than the OCR engine's image-size limit are reduced before recognition, which can further affect small text.
 - Protected video, capture-excluded windows, the secure desktop, and some exclusive full-screen content may not be captured. Compatibility depends on what Windows screen capture can read.
 - The search box occupies the upper-right work area of the selected monitor and can cover some content visually. The app excludes the bar only while taking its own OCR screenshot, allowing it to read text behind the bar. Exclusion ends as soon as pixels are copied, so ordinary screenshots include the search bar and highlights. A screenshot taken during the brief capture step can still omit the bar. Highlights pass mouse input through; clicking the underlying app closes the session because focus changes.
 - Display configuration changes close the active session. Coordinate tests cover scaling and negative monitor origins, but do not establish testing on every physical multi-monitor or DPI configuration.
 
-The app code makes no network requests during normal operation. Captured pixels and recognized text stay in process memory; normal use does not save screenshots or OCR text to disk. Closing a session releases its index and overlay. An OCR operation already running may finish on the worker thread before its temporary memory is released; stale results are discarded. Diagnostic tools write timings, counts, and test outcomes.
+The app code makes no network requests during normal operation. Captured pixels, recognized text and text read through accessibility stay in process memory; normal use does not save screenshots or OCR text to disk. Closing a session releases its index and overlay. An OCR operation already running may finish on the worker thread before its temporary memory is released; stale results are discarded. Diagnostic tools write timings, counts, and test outcomes.
 
 ## Build from source
 

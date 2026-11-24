@@ -43,7 +43,7 @@ struct Bitmap {
 };
 struct Capture {
     Coordinates coordinates;
-    std::unique_ptr<Bitmap> bitmap;
+    std::shared_ptr<Bitmap> bitmap;  // shared: the text lane reads the pixels while OCR runs
     double captureMs{};
 };
 inline MONITORINFO monitorInfo(HMONITOR monitor) {
@@ -67,7 +67,7 @@ inline Capture captureScreen(HMONITOR monitor, unsigned maxDimension, double ups
     const int w = std::max(1, int(std::floor(width * scale)));
     const int h = std::max(1, int(std::floor(height * scale)));
     Capture result{{info.rcMonitor.left, info.rcMonitor.top, width, height, w, h},
-                   std::make_unique<Bitmap>(w, h), 0};
+                   std::make_shared<Bitmap>(w, h), 0};
     HDC screen = GetDC(nullptr);
     if (!screen) throw winError("Cannot access the desktop");
     BOOL ok;
@@ -86,6 +86,20 @@ inline Capture captureScreen(HMONITOR monitor, unsigned maxDimension, double ups
     if (!ok) { SetLastError(error); throw winError("Screen capture failed"); }
     GdiFlush();
     result.captureMs = milliseconds(start);
+    return result;
+}
+// Enlarges an existing capture in memory (no second screenshot), for text too small to recognize.
+inline Capture upscale(const Bitmap& source, Coordinates coordinates, double factor, unsigned maxDimension) {
+    const double scale = std::min(factor, double(maxDimension) / std::max(source.width, source.height));
+    const int w = std::max(1, int(std::floor(source.width * scale)));
+    const int h = std::max(1, int(std::floor(source.height * scale)));
+    coordinates.imageWidth = w; coordinates.imageHeight = h;
+    Capture result{coordinates, std::make_shared<Bitmap>(w, h), 0};
+    SetStretchBltMode(result.bitmap->dc, HALFTONE);
+    SetBrushOrgEx(result.bitmap->dc, 0, 0, nullptr);
+    if (!StretchBlt(result.bitmap->dc, 0, 0, w, h, source.dc, 0, 0, source.width, source.height, SRCCOPY))
+        throw winError("Cannot enlarge capture");
+    GdiFlush();
     return result;
 }
 inline void enableDpiAwareness() {

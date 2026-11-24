@@ -1,6 +1,7 @@
 #include "ocr.hpp"
 #include "overlay.hpp"
 #include "desktop.hpp"
+#include "accessible.hpp"
 #include <commctrl.h>
 #include <shellapi.h>
 #include <dwmapi.h>
@@ -22,7 +23,7 @@ constexpr int TraySearchId = 201, TrayExitId = 202;
 struct Options {
     UINT modifiers = MOD_CONTROL | MOD_SHIFT, key = 'F';
     std::wstring hotkey = L"Ctrl+Shift+F", language, smokeOutput;
-    bool quiet{};
+    bool quiet{}, pageText = true;
 };
 Options parseOptions() {
     Options result;
@@ -33,6 +34,7 @@ Options parseOptions() {
     for (int i = 1; i < count; ++i) {
         std::wstring argument(args[i]);
         if (argument == L"--quiet") result.quiet = true;
+        else if (argument == L"--no-page-text") result.pageText = false;
         else if (argument == L"--language" && i + 1 < count) result.language = args[++i];
         else if (argument == L"--smoke-test" && i + 1 < count) result.smokeOutput = args[++i];
         else if (argument == L"--hotkey" && i + 1 < count) {
@@ -54,17 +56,21 @@ Options parseOptions() {
                 start = end + 1;
             }
             if (!result.key || !result.modifiers) throw std::runtime_error("Hotkey needs a modifier and a letter or digit");
-        } else throw std::runtime_error("Options: --hotkey Ctrl+Alt+F, --language en-US");
+        } else throw std::runtime_error("Options: --hotkey Ctrl+Alt+F, --language en-US, --quiet, --no-page-text");
     }
     return result;
 }
-struct Job { uint64_t token; HMONITOR monitor; vf::Clock::time_point started; bool desktop; };
+struct Job { uint64_t token; HMONITOR monitor; vf::Clock::time_point started; bool desktop; HWND target; };
 struct Captured { uint64_t token; vf::Coordinates coordinates; double captureMs; };
+// One lane's result for a session. The OCR lane may send a partial result (`final` false) before its
+// last; the text lane (accessibility and desktop labels) sends exactly one.
 struct Finished {
     uint64_t token{};
-    std::unique_ptr<vf::SearchIndex> index;
+    bool text{}, final = true;
+    std::vector<vf::Word> words;  // OCR lane
+    vf::ExactText exact;          // text lane
     std::wstring error, language;
-    double captureMs{}, ocrMs{}, indexMs{}, totalMs{};
+    double captureMs{}, ocrMs{};
 };
 std::wstring wide(const std::string& text) {
     const int size = MultiByteToWideChar(CP_UTF8, 0, text.data(), int(text.size()), nullptr, 0);
@@ -87,6 +93,9 @@ class Application {
     HBRUSH editBrush_ = CreateSolidBrush(RGB(245,247,250));
     std::unique_ptr<vf::Overlay> overlay_;
     std::unique_ptr<vf::SearchIndex> index_;
+    std::vector<vf::Word> ocrWords_;
+    vf::ExactText exact_;
+    bool ocrArrived_{}, ocrFinal_{}, textFinal_{}, failed_{};
     std::vector<vf::Match> matches_;
     size_t selection_{};
     UINT dpi_ = 96;
@@ -94,11 +103,17 @@ class Application {
     std::atomic<uint64_t> token_{0};
     std::mutex mutex_;
     std::condition_variable condition_;
-    std::optional<Job> pending_;
+    std::optional<Job> pending_, pendingText_;
+    // The latest capture, shared with the text lane so it can find the lines actually drawn.
+    struct Frame { uint64_t token{}; std::shared_ptr<vf::Bitmap> bitmap; vf::Coordinates coordinates; };
+    struct TextStatus { uint64_t token{}; bool done{}; size_t words{}; };
+    Frame frame_;
+    TextStatus textStatus_;
+    std::condition_variable textCondition_, frameCondition_, textDone_;
     bool stopping_{};
-    std::thread worker_;
+    std::thread worker_, textWorker_;
     vf::Clock::time_point launch_, sessionStart_;
-    double startupMs_{}, uiMs_{}, searchMs_{}, overlayMs_{};
+    double startupMs_{}, uiMs_{}, searchMs_{}, overlayMs_{}, firstMs_{};
     double captureMs_{}, ocrMs_{}, indexMs_{}, totalMs_{};
     unsigned smokeSessions_{}, smokeSearches_{};
     bool smokePassed_ = true;
@@ -189,7 +204,7 @@ class Application {
     void setStatus(const std::wstring& text) { SetWindowTextW(status_, text.c_str()); }
     void showError(const std::wstring& error) {
         if (exiting_) return;
-        loading_ = false; ready_ = false;
+        loading_ = false; ready_ = false; failed_ = true;
         index_.reset(); matches_.clear();
         if (overlay_) overlay_->release();
         SetWindowTextW(count_, L"Error");
@@ -257,6 +272,7 @@ class Application {
         const uint64_t token = ++token_;
         sessionStart_ = vf::Clock::now();
         overlay_->release(); index_.reset(); matches_.clear(); selection_ = 0;
+        ocrWords_.clear(); exact_ = {}; ocrArrived_ = ocrFinal_ = textFinal_ = failed_ = false; firstMs_ = 0;
         if (!existing) SetWindowTextW(edit_, L"");
         SetWindowTextW(count_, automatic ? L"Updating" : L"Scanning");
         if (!automatic) setStatus(L"Reading this monitor locally...\nEnter next   |   Shift+Enter previous   |   F5 refresh   |   Esc close");
@@ -270,19 +286,22 @@ class Application {
         showSearch(); uiMs_ = vf::milliseconds(sessionStart_);
         {
             std::lock_guard lock(mutex_);
-            pending_ = Job{token,monitor,sessionStart_,vf::isDesktopWindow(originalWindow_)};
+            const Job job{token,monitor,sessionStart_,vf::isDesktopWindow(originalWindow_),originalWindow_};
+            pending_ = job; pendingText_ = job;
+            frame_ = {}; textStatus_ = {};
         }
-        condition_.notify_one();
+        condition_.notify_one(); textCondition_.notify_one();
     }
     void closeSession(bool restore = true) {
         const bool hadFocus = GetForegroundWindow() == window_;
         stopScrollWatch();
         ++token_; active_ = false; loading_ = false; capturing_ = false; ready_ = false;
-        { std::lock_guard lock(mutex_); pending_.reset(); }
+        { std::lock_guard lock(mutex_); pending_.reset(); pendingText_.reset(); frame_ = {}; }
         ShowWindow(window_, SW_HIDE);
         SetWindowDisplayAffinity(window_, 0 /* WDA_NONE */);
         if (overlay_) overlay_->release();
         index_.reset(); std::vector<vf::Match>().swap(matches_);
+        std::vector<vf::Word>().swap(ocrWords_); exact_ = {};
         SetWindowTextW(edit_, L"");
         if (restore && hadFocus && IsWindow(originalWindow_)) SetForegroundWindow(originalWindow_);
         originalWindow_ = nullptr;
@@ -300,9 +319,29 @@ class Application {
         matches_ = index_->find(text); selection_ = 0;
         searchMs_ = vf::milliseconds(start);
         render();
-        if (text.empty()) setStatus(L"Type to find text on this monitor.\nEnter next   |   Shift+Enter previous   |   F5 refresh   |   Esc close");
-        else if (matches_.empty()) setStatus(L"No matches. Try a shorter phrase or refresh the screen.\nEnter next   |   Shift+Enter previous   |   F5 refresh   |   Esc close");
-        else setStatus(L"Enter next   |   Shift+Enter previous   |   F5 refresh   |   Esc close");
+        static const wchar_t keys[] = L"Enter next   |   Shift+Enter previous   |   F5 refresh   |   Esc close";
+        std::wstring state;
+        if (text.empty()) state = L"Type to find text on this monitor.";
+        else if (matches_.empty()) state = L"No matches. Try a shorter phrase or refresh the screen.";
+        if (loading_) state = state.empty() ? L"Reading more text..." : state + L" Still reading...";
+        setStatus(state.empty() ? std::wstring(keys) : state + L"\n" + keys);
+    }
+    // Results from the OCR and text lanes arrive separately; each arrival rebuilds the index from both.
+    void rebuild() {
+        // Nothing to show yet: the text lane found nothing and OCR has not reported.
+        if (!ocrArrived_ && exact_.words.empty()) return;
+        const auto start = vf::Clock::now();
+        auto words = ocrWords_;
+        vf::mergeExactText(words, exact_);
+        index_ = std::make_unique<vf::SearchIndex>(words);
+        indexMs_ = vf::milliseconds(start);
+        ready_ = true; loading_ = !(ocrFinal_ && textFinal_);
+        if (!firstMs_) firstMs_ = vf::milliseconds(sessionStart_);
+        updateSearch();
+        if (loading_) return;
+        totalMs_ = vf::milliseconds(sessionStart_);
+        if (!index_->wordCount()) setStatus(L"No readable text found on this monitor.\nF5 refresh   |   Esc close");
+        if (!options_.smokeOutput.empty()) SetTimer(window_,8,80,nullptr);
     }
     void render() {
         overlayMs_ = overlay_->render(matches_, selection_);
@@ -327,6 +366,29 @@ class Application {
         std::nth_element(heights.begin(), heights.begin() + heights.size() / 2, heights.end());
         return heights[heights.size() / 2] < 11;
     }
+    void publishFrame(uint64_t token, const vf::Capture& capture) {
+        {
+            std::lock_guard lock(mutex_);
+            if (token != token_) return;  // closed meanwhile: do not keep a stale screenshot alive
+            frame_ = Frame{token, capture.bitmap, capture.coordinates};
+        }
+        frameCondition_.notify_all();
+    }
+    // Words the text lane found for this session, once it has finished (0 if it has not within `wait`).
+    size_t exactWords(uint64_t token, std::chrono::milliseconds wait) {
+        std::unique_lock lock(mutex_);
+        textDone_.wait_for(lock, wait, [&] {
+            return stopping_ || token_ != token || (textStatus_.token == token && textStatus_.done);
+        });
+        return textStatus_.token == token && textStatus_.done ? textStatus_.words : 0;
+    }
+    std::unique_ptr<Finished> ocrResult(const Job& job, std::vector<vf::Word> words, bool final,
+                                        const std::wstring& language, double captureMs, double ocrMs) {
+        auto result = std::make_unique<Finished>();
+        result->token = job.token; result->final = final; result->words = std::move(words);
+        result->language = language; result->captureMs = captureMs; result->ocrMs = ocrMs;
+        return result;
+    }
     void work() {
         try {
             winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -340,7 +402,6 @@ class Application {
                     if (stopping_) break;
                     job = *pending_; pending_.reset();
                 }
-                auto finished = std::make_unique<Finished>(); finished->token = job.token;
                 try {
                     // Let the compositor apply capture exclusion before taking the screenshot.
                     DwmFlush();
@@ -348,35 +409,39 @@ class Application {
                     if (job.token != token_) continue;
                     post(CapturedMessage, std::make_unique<Captured>(Captured{
                         job.token,capture.coordinates,capture.captureMs}));
-                    finished->captureMs = capture.captureMs;
-                    auto labels = job.desktop ? vf::desktopLabels(capture.coordinates,window_) : std::vector<vf::Word>{};
+                    publishFrame(job.token, capture);  // after the post: text results never overtake it
+                    const auto coordinates = capture.coordinates;
+                    const auto pixels = capture.bitmap;  // kept for a possible enlarged second pass
+                    const double captureMs = capture.captureMs;
                     auto output = ocr.recognize(capture);
                     if (job.token != token_) continue;
-                    if (tooSmall(output.words)) {
-                        // Tiny text (zoomed-out pages) is often unreadable at native size: retry at 2x.
-                        // The search bar must be excluded from this second screenshot too.
-                        SetWindowDisplayAffinity(window_, 0x00000011);
-                        DwmFlush();
-                        auto big = vf::captureScreen(job.monitor, vf::Ocr::maxDimension(), 2.0);
-                        SetWindowDisplayAffinity(window_, 0);
+                    const bool retry = tooSmall(output.words);
+                    // Show what the first pass found right away; the second pass only refines it.
+                    post(FinishedMessage, ocrResult(job, retry ? output.words : std::move(output.words), !retry,
+                                                    output.language, captureMs, output.ocrMs));
+                    if (!retry) continue;
+                    // Tiny text (zoomed-out pages) is often unreadable at native size. When the
+                    // application reported its text exactly, enlarging adds nothing: skip it.
+                    if (exactWords(job.token, std::chrono::milliseconds(300)) < 20 && job.token == token_) {
+                        auto big = vf::upscale(*pixels, coordinates, 2.0, vf::Ocr::maxDimension());
+                        auto second = ocr.recognize(big);
                         if (job.token != token_) continue;
-                        auto retry = ocr.recognize(big);
-                        if (job.token != token_) continue;
-                        if (retry.words.size() > output.words.size()) {
-                            retry.ocrMs += output.ocrMs; output = std::move(retry);
+                        if (second.words.size() > output.words.size()) {
+                            second.ocrMs += output.ocrMs; output = std::move(second);
                         }
                     }
-                    finished->ocrMs = output.ocrMs;
-                    finished->language = std::move(output.language);
-                    const auto indexStart = vf::Clock::now();
-                    vf::mergeDesktopLabels(output.words,std::move(labels));
-                    finished->index = std::make_unique<vf::SearchIndex>(output.words);
-                    finished->indexMs = vf::milliseconds(indexStart);
-                    finished->totalMs = vf::milliseconds(job.started);
+                    if (job.token == token_)
+                        post(FinishedMessage, ocrResult(job, std::move(output.words), true,
+                                                        output.language, captureMs, output.ocrMs));
                 } catch (const winrt::hresult_error& e) {
-                    finished->error = L"Windows OCR: " + std::wstring(e.message());
-                } catch (const std::exception& e) { finished->error = wide(e.what()); }
-                if (job.token == token_) post(FinishedMessage, std::move(finished));
+                    auto failed = std::make_unique<Finished>(); failed->token = job.token;
+                    failed->error = L"Windows OCR: " + std::wstring(e.message());
+                    if (job.token == token_) post(FinishedMessage, std::move(failed));
+                } catch (const std::exception& e) {
+                    auto failed = std::make_unique<Finished>(); failed->token = job.token;
+                    failed->error = wide(e.what());
+                    if (job.token == token_) post(FinishedMessage, std::move(failed));
+                }
             }
             }
             winrt::uninit_apartment();
@@ -387,6 +452,75 @@ class Application {
             auto finished = std::make_unique<Finished>(); finished->token = token_;
             finished->error = wide(e.what()); post(FinishedMessage, std::move(finished));
         }
+    }
+    // Exact text for one session: what the application in front (and the one under the cursor) says it
+    // shows, or Explorer's desktop icon names. Runs beside OCR, so a slow application never delays it.
+    vf::ExactText collectText(const Job& job, const vf::AccessibleText* reader) {
+        std::vector<vf::TextNode> nodes;
+        const HWND overlayWindow = overlay_->window();
+        if (!job.desktop && reader && job.target && IsWindow(job.target)) {
+            const RECT area = vf::monitorInfo(job.monitor).rcMonitor;
+            std::vector<HWND> roots;
+            const auto add = [&](HWND window) {
+                const HWND root = window ? GetAncestor(window, GA_ROOT) : nullptr;
+                if (!root || root == window_ || root == overlayWindow || vf::isDesktopWindow(root) ||
+                    std::find(roots.begin(), roots.end(), root) != roots.end() || vf::avoidsAccessibility(root)) return;
+                roots.push_back(root);
+            };
+            add(job.target);
+            POINT cursor{};
+            if (GetCursorPos(&cursor)) add(WindowFromPoint(cursor));
+            for (const HWND root : roots) {
+                vf::PageRead page;
+                for (int attempt = 0; attempt < 8; ++attempt) {
+                    page = reader->read(root, area, {root, window_, overlayWindow});
+                    if (page.ready || job.token != token_) break;
+                    // Browsers build their accessibility tree when first asked, then keep it.
+                    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                }
+                nodes.insert(nodes.end(), std::make_move_iterator(page.nodes.begin()),
+                             std::make_move_iterator(page.nodes.end()));
+            }
+        }
+        if (nodes.empty() && !job.desktop) return {};
+        // Line positions come from this session's own pixels; wait briefly for them.
+        std::shared_ptr<vf::Bitmap> pixels;
+        vf::Coordinates coordinates{};
+        {
+            std::unique_lock lock(mutex_);
+            frameCondition_.wait_for(lock, std::chrono::milliseconds(300), [&] {
+                return stopping_ || token_ != job.token || frame_.token == job.token;
+            });
+            if (frame_.token == job.token) { pixels = frame_.bitmap; coordinates = frame_.coordinates; }
+        }
+        if (job.desktop) return pixels ? vf::exactLabels(vf::desktopLabels(coordinates, window_)) : vf::ExactText{};
+        return vf::layoutText(nodes, pixels ? &coordinates : nullptr, pixels.get());
+    }
+    void textWork() {
+        const HRESULT initialised = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        {
+            std::unique_ptr<vf::AccessibleText> reader;
+            try { if (options_.pageText) reader = std::make_unique<vf::AccessibleText>(); } catch (...) {}
+            for (;;) {
+                Job job{};
+                {
+                    std::unique_lock lock(mutex_);
+                    textCondition_.wait(lock, [&] { return stopping_ || pendingText_.has_value(); });
+                    if (stopping_) break;
+                    job = *pendingText_; pendingText_.reset();
+                }
+                auto result = std::make_unique<Finished>(); result->token = job.token; result->text = true;
+                try { result->exact = collectText(job, reader.get()); } catch (...) { /* OCR still covers the screen */ }
+                {
+                    std::lock_guard lock(mutex_);
+                    if (frame_.token == job.token) frame_.bitmap.reset();  // release the screenshot
+                    textStatus_ = TextStatus{job.token, true, result->exact.words.size()};
+                }
+                textDone_.notify_all();
+                if (job.token == token_) post(FinishedMessage, std::move(result));
+            }
+        }
+        if (SUCCEEDED(initialised)) CoUninitialize();
     }
     void addTray(bool notify) {
         NOTIFYICONDATAW data{sizeof(data)};
@@ -433,7 +567,7 @@ class Application {
              << ",\n  \"sessions\": " << smokeSessions_ << ",\n  \"cached_searches\": " << smokeSearches_
              << ",\n  \"startup_ms\": " << startupMs_ << ",\n  \"search_ui_ms\": " << uiMs_
              << ",\n  \"capture_ms\": " << captureMs_ << ",\n  \"ocr_ms\": " << ocrMs_
-             << ",\n  \"index_ms\": " << indexMs_ << ",\n  \"search_ms\": " << searchMs_
+             << ",\n  \"first_result_ms\": " << firstMs_ << ",\n  \"index_ms\": " << indexMs_ << ",\n  \"search_ms\": " << searchMs_
              << ",\n  \"overlay_ms\": " << overlayMs_ << ",\n  \"session_total_ms\": " << totalMs_
              << ",\n  \"failed_checks\": [";
         for (size_t i = 0; i < smokeFailures_.size(); ++i)
@@ -489,14 +623,18 @@ class Application {
         case FinishedMessage: {
             std::unique_ptr<Finished> finished(reinterpret_cast<Finished*>(l));
             if (!active_ || finished->token != token_) return 0;
-            SetWindowDisplayAffinity(window_, 0 /* WDA_NONE */);
-            if (!finished->error.empty()) { showError(finished->error); return 0; }
-            index_ = std::move(finished->index); loading_ = false; ready_ = true;
-            captureMs_ = finished->captureMs; ocrMs_ = finished->ocrMs;
-            indexMs_ = finished->indexMs; totalMs_ = finished->totalMs;
-            updateSearch();
-            if (!index_->wordCount()) setStatus(L"No readable text found on this monitor.\nF5 refresh   |   Esc close");
-            if (!options_.smokeOutput.empty()) SetTimer(window_,8,80,nullptr);
+            if (failed_) return 0;  // an error is on screen; F5 starts over
+            if (!finished->error.empty()) {
+                SetWindowDisplayAffinity(window_, 0 /* WDA_NONE */);
+                showError(finished->error); return 0;
+            }
+            if (finished->text) { exact_ = std::move(finished->exact); textFinal_ = true; }
+            else {
+                SetWindowDisplayAffinity(window_, 0 /* WDA_NONE */);
+                ocrWords_ = std::move(finished->words); ocrFinal_ = finished->final; ocrArrived_ = true;
+                captureMs_ = finished->captureMs; ocrMs_ = finished->ocrMs;
+            }
+            rebuild();
             return 0;
         }
         case WM_TIMER:
@@ -619,6 +757,7 @@ public:
         hotkeyRegistered_ = true;
         addTray(options_.smokeOutput.empty() && !options_.quiet);
         worker_ = std::thread([this] { work(); });
+        textWorker_ = std::thread([this] { textWork(); });
         startupMs_ = vf::milliseconds(launch_);
         if (!options_.smokeOutput.empty()) {
             SetTimer(window_,7,100,nullptr); SetTimer(window_,9,15000,nullptr);
@@ -626,9 +765,10 @@ public:
     }
     ~Application() {
         exiting_ = true; ++token_;
-        { std::lock_guard lock(mutex_); stopping_ = true; pending_.reset(); }
-        condition_.notify_one();
+        { std::lock_guard lock(mutex_); stopping_ = true; pending_.reset(); pendingText_.reset(); }
+        condition_.notify_all(); textCondition_.notify_all(); frameCondition_.notify_all(); textDone_.notify_all();
         if (worker_.joinable()) worker_.join();
+        if (textWorker_.joinable()) textWorker_.join();
         MSG message{};
         while (PeekMessageW(&message,window_,CapturedMessage,FinishedMessage,PM_REMOVE)) {
             if (message.message == CapturedMessage) delete reinterpret_cast<Captured*>(message.lParam);

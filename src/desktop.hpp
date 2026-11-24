@@ -67,20 +67,4 @@ inline std::vector<Word> desktopLabels(Coordinates coordinates, HWND excludedSea
     EnumWindows(Scan::root, reinterpret_cast<LPARAM>(&scan));
     return std::move(scan.words);
 }
-
-inline void mergeDesktopLabels(std::vector<Word>& words, std::vector<Word> labels) {
-    if (labels.empty()) return;
-    unsigned line{};
-    for (const auto& word : words) line = std::max(line, word.line+1);
-    // Remove OCR readings of the same icon/label so they cannot produce duplicate
-    // or misspelled matches alongside Explorer's exact visible item name.
-    words.erase(std::remove_if(words.begin(), words.end(), [&](const Word& word) {
-        const double x = word.bounds.x+word.bounds.width/2, y = word.bounds.y+word.bounds.height/2;
-        return std::any_of(labels.begin(), labels.end(), [&](const Word& label) {
-            const auto& b = label.bounds;
-            return x >= b.x && x < b.x+b.width && y >= b.y && y < b.y+b.height;
-        });
-    }), words.end());
-    for (auto& label : labels) { label.line = line++; words.push_back(std::move(label)); }
-}
 }

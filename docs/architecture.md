@@ -37,6 +37,8 @@ The three-dot grip and noninteractive parts of the floating window return the na
 | --- | --- |
 | `src/app.cpp` | Arguments, instance guard, global hotkey, tray menu, controls, session lifetime, worker queue, message dispatch, and diagnostic smoke mode. |
 | `src/platform.hpp` | GDI buffer ownership, cursor-monitor selection, capture, physical coordinate mapping, DPI setup, and timing helpers. |
+| `src/accessible.hpp` | UI Automation reader: visible text runs (text, links, buttons) of the window in front and the one under the cursor, visibility filtering, and placement of each run's words on the lines drawn in the capture. |
+| `src/layout.hpp` | Pure functions: finds text lines and word gaps from pixels (`inkLines`) and spreads a run's words along them (`spreadWords`). |
 | `src/desktop.hpp` | Optional local accessibility names and physical bounds for visible Explorer desktop shortcuts, merged once into the cached index. |
 | `src/ocr.hpp` | Lazy creation of the Windows OCR engine, language selection, BGRA-to-SoftwareBitmap memory copy, recognition, and extraction of word boxes. |
 | `src/search.hpp` | Unicode/whitespace normalization, text-to-word spans, substring and phrase matching, and highlight regions. |
@@ -85,3 +87,9 @@ The benchmark and application matrix use visible fixtures to exercise the captur
 ## Scroll refresh
 
 While a session is active the app installs a `WH_MOUSE_LL` hook that only posts a message on wheel events. The UI thread hides the highlights, then debounces (200 ms idle, 1 s maximum) into a normal capture/OCR job via the existing token/worker path, preserving the query and window position. The hook and timers are removed when the session closes. Events over the search bar or on other monitors are ignored.
+
+## Two lanes: OCR and exact text
+
+A session queues one job for each of two persistent threads. The **OCR lane** captures the monitor, publishes the screenshot (shared, read-only) and recognizes it on up to four horizontal strips at once, with one `OcrEngine` per strip (strips overlap by 64 px; a word belongs to the strip holding its vertical centre). Its result is posted at once; only when it found little or very small text does it recognize an enlarged copy of the same pixels (no second capture), and it skips that when the text lane has already supplied at least 20 exact words. The **text lane** queries UI Automation while the capture is being taken, waits briefly for the screenshot, and finds each run's lines and word gaps in it. Browsers build their accessibility tree on first request, so the lane retries for up to about a second when a browser reports no page yet.
+
+The UI thread keeps the latest OCR words and exact text, and on each arrival merges them (`mergeExactText`: OCR words whose centres fall inside exact-text rectangles are dropped) and rebuilds the index, then re-applies the current query. Both lanes use the session token, so stale results are discarded.

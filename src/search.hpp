@@ -61,6 +61,40 @@ inline std::wstring normalize(const std::wstring& input) {
     return result;
 }
 
+// Text supplied exactly by the application itself (accessibility) or by Explorer (desktop icons).
+// OCR words inside a `covered` rectangle are replaced by `words`.
+struct ExactText {
+    std::vector<Word> words;
+    std::vector<Box> covered;
+};
+inline void mergeExactText(std::vector<Word>& words, const ExactText& exact) {
+    if (exact.words.empty()) return;
+    unsigned base{};
+    for (const auto& word : words) base = std::max(base, word.line + 1);
+    if (!exact.covered.empty())
+        words.erase(std::remove_if(words.begin(), words.end(), [&](const Word& word) {
+            const double x = word.bounds.x + word.bounds.width / 2, y = word.bounds.y + word.bounds.height / 2;
+            return std::any_of(exact.covered.begin(), exact.covered.end(), [&](const Box& b) {
+                return x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height;
+            });
+        }), words.end());
+    for (const auto& word : exact.words) {
+        words.push_back(word);
+        words.back().line += base;
+    }
+}
+// Exact labels (each its own line) that replace whatever OCR read inside their bounds.
+inline ExactText exactLabels(std::vector<Word> labels) {
+    ExactText exact;
+    unsigned line{};
+    for (auto& label : labels) { exact.covered.push_back(label.bounds); label.line = line++; }
+    exact.words = std::move(labels);
+    return exact;
+}
+inline void mergeDesktopLabels(std::vector<Word>& words, std::vector<Word> labels) {
+    mergeExactText(words, exactLabels(std::move(labels)));
+}
+
 class SearchIndex {
     struct Span { size_t begin, end; Box box; unsigned line; };
     std::wstring text_;
